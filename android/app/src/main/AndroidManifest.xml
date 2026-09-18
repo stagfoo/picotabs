@@ -1,0 +1,100 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- A launcher has to enumerate every launchable activity on the device.
+         Android 11+ hides the package list behind this permission; it is
+         Play-Store-restricted, but a launcher is one of the documented
+         legitimate uses and this one is sideloaded anyway. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Lets other apps send this launcher the legacy install-shortcut
+         broadcast; the receiver below is guarded by it. -->
+    <permission
+        android:name="com.android.launcher.permission.INSTALL_SHORTCUT"
+        android:protectionLevel="normal" />
+    <uses-permission android:name="com.android.launcher.permission.INSTALL_SHORTCUT" />
+
+    <application
+        android:label="picotabs"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <!-- screenOrientation is fullUser, not portrait: the deck follows the
+             phone's auto-rotate setting and stays put when that is locked.
+             There is no separate landscape layout — the deck solves for
+             whatever box it is handed, so the cards just get wider and the
+             strips thinner. configChanges already covers orientation and
+             screenSize, so a rotation resizes the running activity rather than
+             restarting it, and costs no cold start. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize"
+
+            android:screenOrientation="fullUser"
+
+            android:launchMode="singleTask"
+            android:stateNotNeeded="true"
+            android:excludeFromRecents="true"
+            android:clearTaskOnLaunch="true"
+            android:resumeWhilePausing="true">
+
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+
+            <!-- CATEGORY_HOME + CATEGORY_DEFAULT is what offers this app in
+                 Settings > Apps > Default apps > Home app. CATEGORY_LAUNCHER
+                 is kept as well so it can still be opened from the current
+                 launcher's app drawer while it isn't the default yet — handy
+                 during development, harmless afterwards. -->
+            <!-- Where "add to home screen" arrives. The system resolves this
+                 action against the default launcher's package, so it works on
+                 any activity in it: Launcher3 — and so Lawnchair — puts it on a
+                 separate one with DEFAULT, Fossify puts it on the home activity
+                 without. Both work, so this carries DEFAULT and sits on the
+                 home activity: the union of what is known to work rather than a
+                 guess between them. -->
+            <intent-filter>
+                <action android:name="android.content.pm.action.CONFIRM_PIN_SHORTCUT"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.HOME"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+
+        <!-- The oldest route, still used by apps that find the modern one
+             unsupported. Nothing listening means the shortcut evaporates. -->
+        <receiver
+            android:name=".InstallShortcutReceiver"
+            android:exported="true"
+            android:permission="com.android.launcher.permission.INSTALL_SHORTCUT">
+            <intent-filter>
+                <action android:name="com.android.launcher.action.INSTALL_SHORTCUT"/>
+            </intent-filter>
+        </receiver>
+
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+
+    <queries>
+        <!-- The launchable-activity query the app list is built from. Without
+             it, queryIntentActivities returns only this app on Android 11+. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
+        </intent>
+    </queries>
+</manifest>

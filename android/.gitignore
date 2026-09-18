@@ -1,0 +1,20 @@
+gradle-wrapper.jar
+/.gradle
+/captures/
+/gradlew
+/gradlew.bat
+/local.properties
+GeneratedPluginRegistrant.java
+.cxx/
+
+# Remember to never publicly share your keystore.
+# See https://flutter.dev/to/reference-keystore
+key.properties
+**/*.keystore
+**/*.jks
+
+# Exception: app/debug.keystore is committed on purpose (debug-only, never used
+# for release signing) so CI and local builds share one debug identity — see
+# app/build.gradle.kts signingConfigs.debug. The blanket **/*.keystore above
+# would otherwise make `git add` silently no-op on it.
+!app/debug.keystore
