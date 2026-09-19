@@ -261,7 +261,7 @@ class LauncherBridge {
         await _channel.invokeListMethod<Object?>('widgetProviders') ?? const [];
     return [
       for (final entry in raw.whereType<Map<Object?, Object?>>())
-        if (WidgetProvider.fromChannel(entry) case final provider?) provider,
+        ?WidgetProvider.fromChannel(entry),
     ];
   }
 
