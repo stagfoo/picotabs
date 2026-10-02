@@ -996,6 +996,8 @@ class _TileFace extends StatelessWidget {
       return _picture(context, path, fill ? BoxFit.cover : BoxFit.contain);
     }
 
+    // A custom icon is a picture of the tile, not a picture of the icon: cover,
+    // so it fills whatever it has been given rather than sitting in the middle.
     final icon = iconPath;
     if (icon != null) return _picture(context, icon, BoxFit.cover);
 
@@ -1008,12 +1010,18 @@ class _TileFace extends StatelessWidget {
 
   Widget _picture(BuildContext context, String path, BoxFit fit) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(size * 0.24),
+      // Filling, the corners have to match the tile's own radius; as an icon the
+      // radius is a proportion of the glyph, the way an app icon is rounded.
+      borderRadius:
+          BorderRadius.circular(fill ? Metrics.tileRadius : size * 0.24),
       child: Image.file(
         File(path),
         fit: fit,
-        width: size,
-        height: size,
+        // Infinity when filling, so the image takes the tile rather than a
+        // square of it. Sizing it by `size` was the bug: a picture put on a 2x2
+        // tile still drew at icon size in the middle of it.
+        width: fill ? double.infinity : size,
+        height: fill ? double.infinity : size,
         // Animated GIFs and WebPs play from here with nothing else needed, which
         // is the whole reason the platform side stores them byte for byte: a
         // re-encoded one would arrive as a still and never move.
@@ -1091,52 +1099,102 @@ class _TileBodyState extends State<_TileBody>
     // like an app would waste most of the room on a frame around something whose
     // whole point is to be looked at.
     final tile = item.isImage
-        ? ClipRRect(
-            borderRadius: BorderRadius.circular(Metrics.tileRadius),
-            child: SizedBox.expand(
-              child: _TileFace(
-                tile: item,
-                app: null,
-                imagePath: widget.imagePath,
-                iconPath: null,
-                // Sized by the box it is given rather than by a number: fill
-                // mode ignores it, and the fallback glyph scales off the tile.
-                size: 96,
-                fill: true,
-              ),
+        // No ClipRRect here: filling, the face clips itself to the tile radius,
+        // and a second rounded clip over the same rectangle is a saveLayer for
+        // nothing.
+        ? SizedBox.expand(
+            child: _TileFace(
+              tile: item,
+              app: null,
+              imagePath: widget.imagePath,
+              iconPath: null,
+              // Only the fallback glyph reads this; the picture is sized by the
+              // box it is given.
+              size: 96,
+              fill: true,
             ),
           )
         : LayoutBuilder(
             builder: (context, constraints) {
               final icon =
                   (constraints.biggest.shortestSide * 0.52).clamp(28.0, 72.0);
+              final custom = widget.iconPath;
+              final label = app?.label ?? item.id.split('/').first;
               return Container(
                 decoration: BoxDecoration(
                   color: Paper.surface,
                   borderRadius: BorderRadius.circular(Metrics.tileRadius),
                   border: Border.all(color: Paper.edge),
                 ),
-                padding: const EdgeInsets.all(6),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _TileFace(
-                      tile: item,
-                      app: app,
-                      imagePath: null,
-                      iconPath: widget.iconPath,
-                      size: icon,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      app?.label ?? item.id.split('/').first,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: text(size: 10, color: Paper.dim),
-                    ),
-                  ],
-                ),
+                // None at all under a custom picture: it is the face of the
+                // tile, so inset it and the surface shows as a frame the
+                // picture was never meant to sit in.
+                padding: EdgeInsets.all(custom == null ? 6 : 0),
+                child: custom == null
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _TileFace(
+                            tile: item,
+                            app: app,
+                            imagePath: null,
+                            iconPath: null,
+                            size: icon,
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                            style: text(size: 10, color: Paper.dim),
+                          ),
+                        ],
+                      )
+                    // A picture fills the tile and the name goes on top of it,
+                    // rather than the picture shrinking to leave a row for the
+                    // name. A label below would make a 2x2 tile mostly empty
+                    // surface with a small picture in the middle of it, which is
+                    // what this used to do.
+                    : Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _TileFace(
+                            tile: item,
+                            app: app,
+                            imagePath: null,
+                            iconPath: custom,
+                            size: icon,
+                            fill: true,
+                          ),
+                          Positioned(
+                            left: 6,
+                            right: 6,
+                            bottom: 6,
+                            child: DecoratedBox(
+                              // Its own dark pill, not the page's text colour:
+                              // the picture behind it is unknown and may be any
+                              // brightness, and a label that reads on the ground
+                              // may vanish on a photograph.
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.55),
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 6, vertical: 2),
+                                child: Text(
+                                  label,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  textAlign: TextAlign.center,
+                                  style: text(size: 10, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
               );
             },
           );
