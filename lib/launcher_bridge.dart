@@ -234,20 +234,34 @@ class LauncherBridge {
   /// Opens the system picker so a card can be given a picture. Null when the
   /// user backed out — or when this activity was rebuilt while the picker was
   /// up, in which case [cardImages] still finds the file.
-  Future<String?> pickCardImage(String cardId) =>
-      _channel.invokeMethod<String>('pickCardImage', {'cardId': cardId});
+  /// Opens the system picker and copies what is chosen into the launcher's own
+  /// storage under [mediaId]. Null when the user backed out.
+  ///
+  /// An animated file is kept as it is rather than re-encoded, so a GIF stays a
+  /// GIF: Flutter animates one from the file, and decoding it to re-save it
+  /// would hand back its first frame and nothing else.
+  Future<String?> pickMedia(String mediaId) =>
+      _channel.invokeMethod<String>('pickMedia', {'mediaId': mediaId});
 
   /// The picture each card is wearing, by card id, read off disk.
-  Future<Map<String, String>> cardImages() async {
-    final map = await _channel.invokeMapMethod<Object?, Object?>('cardImages');
+  /// Every stored picture, by id, as a path on disk.
+  Future<Map<String, String>> mediaFiles() async {
+    final map = await _channel.invokeMapMethod<Object?, Object?>('mediaFiles');
     return {
       for (final entry in (map ?? const {}).entries)
         '${entry.key}': '${entry.value}',
     };
   }
 
-  Future<void> removeCardImage(String cardId) =>
-      _channel.invokeMethod<void>('removeCardImage', {'cardId': cardId});
+  Future<void> removeMedia(String mediaId) =>
+      _channel.invokeMethod<void>('removeMedia', {'mediaId': mediaId});
+
+  /// Deletes every stored picture not in [keep].
+  ///
+  /// Pictures outlive the tiles that referenced them, and nothing else removes
+  /// the files, so without this the store only ever grows.
+  Future<void> reapMedia(List<String> keep) =>
+      _channel.invokeMethod<void>('reapMedia', {'keep': keep});
 
   /// Seeds the icon cache for a shortcut whose icon came with it rather than
   /// from the platform.

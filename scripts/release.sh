@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a debug APK locally and publishes it as a GitHub release asset, for
+# Builds a release APK locally and publishes it as a GitHub release asset, for
 # when CI budget is tight. Uses the same debug.keystore committed to the repo
 # that CI builds use, so this can still install as an update over a previously
 # CI-built (or previously locally-built) copy.

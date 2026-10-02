@@ -3,7 +3,7 @@ import 'package:picotabs/board.dart';
 import 'package:picotabs/grid.dart';
 
 Tile tile(String id, {int row = -1, int col = -1, int colSpan = 1, int rowSpan = 1}) =>
-    Tile(appId: id, row: row, col: col, colSpan: colSpan, rowSpan: rowSpan);
+    Tile.app(id, row: row, col: col, colSpan: colSpan, rowSpan: rowSpan);
 
 const grid = GridPlacement(crossAxisCount: 4);
 
@@ -216,6 +216,39 @@ void main() {
     test('stop at the bottom of the last row used', () {
       final tiles = [tile('a', row: 0, col: 0)];
       expect(grid.gaps(items(tiles)), {(0, 1), (0, 2), (0, 3)});
+    });
+  });
+
+  group('pictures sit on the grid like anything else', () {
+    test('a picture tile is placed, moved and resized the same way', () {
+      // The grid was written to an interface for this reason: none of the
+      // geometry asks what it is moving.
+      final picture = Tile.image('m-1');
+      final app = tile('com.a/M');
+      final all = items([app, picture]);
+      grid.assignMissingPositions(all);
+
+      expect(picture.placed, isTrue);
+      expect(grid.canResize(all, picture, 2, 2), isTrue);
+      picture.colSpan = 2;
+      picture.rowSpan = 2;
+      // And an app cannot then be dropped on top of it.
+      expect(
+        grid.cellsFor(picture.row, picture.col, 2, 2)
+            .contains((app.row, app.col)),
+        isFalse,
+      );
+    });
+
+    test('two tiles of the same picture do not collide', () {
+      // They have different ids, so the grid sees two items rather than one it
+      // keeps rediscovering.
+      final a = Tile.image('m-1');
+      final b = Tile.image('m-1');
+      expect(a.id, isNot(b.id));
+      final all = items([a, b]);
+      grid.assignMissingPositions(all);
+      expect((a.row, a.col), isNot((b.row, b.col)));
     });
   });
 }

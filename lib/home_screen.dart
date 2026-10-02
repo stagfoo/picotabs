@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -43,6 +44,13 @@ class _HomeScreenState extends State<HomeScreen>
   bool _organising = false;
   String? _dragging;
 
+  /// Where each stored picture lives on disk, by id.
+  ///
+  /// Kept here rather than looked up per tile: the board names pictures by id
+  /// and only the platform knows the paths, so one map read at load is the whole
+  /// translation - and a tile that draws from it needs no Future to paint.
+  Map<String, String> _media = const {};
+
   @override
   void initState() {
     super.initState();
@@ -66,10 +74,14 @@ class _HomeScreenState extends State<HomeScreen>
     try {
       final board = await _store.load();
       final cached = await _appCache.load();
+      // Before the first frame: a tile whose picture arrived a moment later
+      // would paint its fallback once and then jump.
+      final media = await _loadMedia();
       if (!mounted) return;
       setState(() {
         _board = board;
         _apps = _index(cached?.apps ?? const []);
+        _media = media;
         _loading = false;
       });
       _rebuildTabs();
@@ -78,6 +90,18 @@ class _HomeScreenState extends State<HomeScreen>
     } catch (_) {
       if (!mounted) return;
       setState(() => _loading = false);
+    }
+  }
+
+  /// The stored pictures, or none if the platform cannot say.
+  ///
+  /// Never throws: a launcher that will not draw because it could not list its
+  /// wallpapers is worse than one drawing on its plain ground.
+  Future<Map<String, String>> _loadMedia() async {
+    try {
+      return await LauncherBridge.instance.mediaFiles();
+    } catch (e) {
+      return const {};
     }
   }
 
@@ -92,8 +116,12 @@ class _HomeScreenState extends State<HomeScreen>
       var changed = false;
       for (final tab in _board.tabs) {
         for (final tile in [...tab.tiles]) {
-          if (!index.containsKey(tile.appId)) {
-            changed |= _board.remove(tab.id, tile.appId);
+          // Pictures are not in the app list and never will be, so only app
+          // tiles are checked against it - sweeping on id alone would clear
+          // every image tile the first time the launcher looked.
+          final appId = tile.appId;
+          if (appId != null && !index.containsKey(appId)) {
+            changed |= _board.remove(tab.id, appId);
           }
         }
       }
@@ -111,6 +139,39 @@ class _HomeScreenState extends State<HomeScreen>
       {for (final app in apps) app.id: app};
 
   Future<void> _save() => _store.save(_board);
+
+  /// Opens the picker and returns the new picture's id, or null if none came.
+  ///
+  /// The id is made here rather than by the platform so the caller can store it
+  /// on a tile straight away; the file is named after it.
+  Future<String?> _pickMedia() async {
+    final mediaId = 'm-${DateTime.now().microsecondsSinceEpoch}';
+    final path = await LauncherBridge.instance.pickMedia(mediaId);
+    if (path == null) return null;
+    if (mounted) setState(() => _media = {..._media, mediaId: path});
+    return mediaId;
+  }
+
+  /// Deletes one picture, for when a tile stops pointing at it.
+  Future<void> _forgetMedia(String mediaId) async {
+    await LauncherBridge.instance.removeMedia(mediaId);
+    if (mounted) setState(() => _media = {..._media}..remove(mediaId));
+  }
+
+  /// Deletes every stored picture the board no longer mentions.
+  ///
+  /// Called after a save rather than before one: a crash between the two would
+  /// otherwise leave the board pointing at files that had already gone.
+  Future<void> _reapMedia() async {
+    final keep = _board.mediaIds;
+    await LauncherBridge.instance.reapMedia(keep.toList());
+    if (mounted) {
+      setState(() => _media = {
+            for (final entry in _media.entries)
+              if (keep.contains(entry.key)) entry.key: entry.value,
+          });
+    }
+  }
 
   void _rebuildTabs() {
     final was = _tabs?.index ?? 0;
@@ -142,7 +203,7 @@ class _HomeScreenState extends State<HomeScreen>
       placeName: tab.name,
       accent: const Color(0xFFCB5B2E),
       installed: _apps.values.toList(),
-      alreadyHere: {for (final tile in tab.tiles) tile.appId},
+      alreadyHere: {for (final tile in tab.tiles) ?tile.appId},
       alsoIn: {
         for (final app in _apps.keys)
           if (_board.tabsWith(app).where((t) => t.id != tab.id).isNotEmpty)
@@ -163,9 +224,11 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Future<void> _tileMenu(Tile tile) async {
-    final app = _apps[tile.appId];
-    final elsewhere =
-        _board.tabsWith(tile.appId).where((t) => t.id != _here.id).toList();
+    final appId = tile.appId;
+    final app = appId == null ? null : _apps[appId];
+    final elsewhere = appId == null
+        ? const <TabPage>[]
+        : _board.tabsWith(appId).where((t) => t.id != _here.id).toList();
 
     final choice = await showModalBottomSheet<String>(
       context: context,
@@ -176,12 +239,16 @@ class _HomeScreenState extends State<HomeScreen>
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              title: Text(app?.label ?? tile.appId,
-                  style: text(size: 15, weight: 600)),
+              title: Text(
+                tile.isImage ? 'Picture' : (app?.label ?? tile.id),
+                style: text(size: 15, weight: 600),
+              ),
               subtitle: Text(
-                elsewhere.isEmpty
-                    ? 'Only on ${_here.name}'
-                    : 'Also on ${elsewhere.map((t) => t.name).join(', ')}',
+                tile.isImage
+                    ? 'On ${_here.name}'
+                    : elsewhere.isEmpty
+                        ? 'Only on ${_here.name}'
+                        : 'Also on ${elsewhere.map((t) => t.name).join(', ')}',
                 style: text(size: 11, color: Paper.dim),
               ),
             ),
@@ -193,22 +260,54 @@ class _HomeScreenState extends State<HomeScreen>
                   style: text(size: 11, color: Paper.dim)),
               onTap: () => Navigator.pop(context, 'organise'),
             ),
-            for (final other in _board.tabs)
-              if (other.id != _here.id && !other.holds(tile.appId))
-                ListTile(
-                  leading:
-                      const Icon(Icons.drive_file_move_outlined, color: Paper.dim),
-                  title: Text('Move to ${other.name}', style: text(size: 14)),
-                  onTap: () => Navigator.pop(context, 'move:${other.id}'),
+            // Only an app tile wears a custom icon. A picture tile already is
+            // its picture, so "change the icon" there is just "change it".
+            if (!tile.isImage)
+              ListTile(
+                leading: const Icon(Icons.image_outlined, color: Paper.dim),
+                title: Text(
+                  tile.iconMediaId == null ? 'Custom icon' : 'Change icon',
+                  style: text(size: 14),
                 ),
+                subtitle: Text('An image or a GIF, in place of the app icon',
+                    style: text(size: 11, color: Paper.dim)),
+                onTap: () => Navigator.pop(context, 'icon'),
+              ),
+            if (!tile.isImage && tile.iconMediaId != null)
+              ListTile(
+                leading: const Icon(Icons.restore_rounded, color: Paper.dim),
+                title: Text('Use the app icon again', style: text(size: 14)),
+                onTap: () => Navigator.pop(context, 'icon:clear'),
+              ),
+            if (tile.isImage)
+              ListTile(
+                leading: const Icon(Icons.image_outlined, color: Paper.dim),
+                title: Text('Change picture', style: text(size: 14)),
+                onTap: () => Navigator.pop(context, 'icon'),
+              ),
+            // Moving is an app idea: it is the same app seen from another tab.
+            // A picture is one placement, so moving it would be deleting it
+            // here and making a new one there, which is what taking it off and
+            // adding it already is.
+            if (!tile.isImage)
+              for (final other in _board.tabs)
+                if (other.id != _here.id && !other.holds(tile.id))
+                  ListTile(
+                    leading: const Icon(Icons.drive_file_move_outlined,
+                        color: Paper.dim),
+                    title: Text('Move to ${other.name}', style: text(size: 14)),
+                    onTap: () => Navigator.pop(context, 'move:${other.id}'),
+                  ),
             ListTile(
               leading: const Icon(Icons.remove_circle_outline_rounded,
                   color: Color(0xFFC0503A)),
               title: Text('Take off ${_here.name}', style: text(size: 14)),
               subtitle: Text(
-                elsewhere.isEmpty
-                    ? 'From the launcher, not from the phone'
-                    : 'It stays on the other tabs',
+                tile.isImage
+                    ? 'The picture is deleted with it'
+                    : elsewhere.isEmpty
+                        ? 'From the launcher, not from the phone'
+                        : 'It stays on the other tabs',
                 style: text(size: 11, color: Paper.dim),
               ),
               onTap: () => Navigator.pop(context, 'remove'),
@@ -223,15 +322,58 @@ class _HomeScreenState extends State<HomeScreen>
       setState(() => _organising = true);
       return;
     }
+    if (choice == 'icon') {
+      await _pickTileImage(tile);
+      return;
+    }
+    if (choice == 'icon:clear') {
+      final gone = tile.iconMediaId;
+      _board.replace(_here.id, tile.id, (t) => t.withIcon(null));
+      setState(() {});
+      await _save();
+      if (gone != null) await _forgetMedia(gone);
+      return;
+    }
     if (choice == 'remove') {
-      _board.remove(_here.id, tile.appId);
-    } else if (choice.startsWith('move:')) {
+      _board.remove(_here.id, tile.id);
+      setState(() {});
+      // After the board is saved without it, so a picture is only deleted once
+      // nothing can still be pointing at it.
+      await _save();
+      await _reapMedia();
+      return;
+    }
+    if (choice.startsWith('move:') && appId != null) {
       final target = choice.substring(5);
-      _board.moveApp(_here.id, target, tile.appId);
+      _board.moveApp(_here.id, target, appId);
       _grid.assignMissingPositions(_board[target]!.tiles.cast<GridItem>());
     }
     setState(() {});
     await _save();
+  }
+
+  /// Picks a picture for [tile] - its own image, or its custom icon.
+  Future<void> _pickTileImage(Tile tile) async {
+    final previous = tile.isImage ? null : tile.iconMediaId;
+    final mediaId = await _pickMedia();
+    if (mediaId == null || !mounted) return;
+
+    if (tile.isImage) {
+      // A picture tile's image is its identity, so changing it replaces the
+      // tile in place rather than editing one - the old file is reaped below.
+      _board.replace(
+        _here.id,
+        tile.id,
+        (t) => Tile.image(mediaId, id: t.id, row: t.row, col: t.col,
+            colSpan: t.colSpan, rowSpan: t.rowSpan),
+      );
+    } else {
+      _board.replace(_here.id, tile.id, (t) => t.withIcon(mediaId));
+    }
+    setState(() {});
+    await _save();
+    if (previous != null) await _forgetMedia(previous);
+    await _reapMedia();
   }
 
   Future<void> _tabMenu(TabPage tab) async {
@@ -254,6 +396,32 @@ class _HomeScreenState extends State<HomeScreen>
               title: Text('Rename', style: text(size: 14)),
               onTap: () => Navigator.pop(context, 'rename'),
             ),
+            ListTile(
+              leading: const Icon(Icons.add_photo_alternate_outlined,
+                  color: Paper.dim),
+              title: Text('Add a picture', style: text(size: 14)),
+              subtitle: Text('An image or a GIF, as a tile of its own',
+                  style: text(size: 11, color: Paper.dim)),
+              onTap: () => Navigator.pop(context, 'image'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.wallpaper_rounded, color: Paper.dim),
+              title: Text(
+                tab.backgroundMediaId == null
+                    ? 'Set a background'
+                    : 'Change the background',
+                style: text(size: 14),
+              ),
+              subtitle: Text('Behind this tab only',
+                  style: text(size: 11, color: Paper.dim)),
+              onTap: () => Navigator.pop(context, 'background'),
+            ),
+            if (tab.backgroundMediaId != null)
+              ListTile(
+                leading: const Icon(Icons.layers_clear_rounded, color: Paper.dim),
+                title: Text('Clear the background', style: text(size: 14)),
+                onTap: () => Navigator.pop(context, 'background:clear'),
+              ),
             if (_board.indexOf(tab.id) > 0)
               ListTile(
                 leading: const Icon(Icons.west_rounded, color: Paper.dim),
@@ -281,6 +449,18 @@ class _HomeScreenState extends State<HomeScreen>
     );
     if (!mounted || choice == null) return;
 
+    // The three that open a picker or delete files return on their own: they
+    // save and reap for themselves, where the rest share the save below.
+    if (choice == 'image') return _addImageTile(tab);
+    if (choice == 'background') return _pickBackground(tab);
+    if (choice == 'background:clear') {
+      final gone = tab.backgroundMediaId;
+      setState(() => tab.backgroundMediaId = null);
+      await _save();
+      if (gone != null) await _forgetMedia(gone);
+      return;
+    }
+
     switch (choice) {
       case 'rename':
         final name = await _askForName('Rename tab', tab.name);
@@ -295,6 +475,32 @@ class _HomeScreenState extends State<HomeScreen>
     }
     setState(_rebuildTabs);
     await _save();
+  }
+
+  /// Puts a picture on [tab] as a tile of its own.
+  Future<void> _addImageTile(TabPage tab) async {
+    final mediaId = await _pickMedia();
+    if (mediaId == null || !mounted) return;
+    if (_board.addImage(tab.id, mediaId) == null) {
+      // The tab went while the picker was up. The file is already stored, so it
+      // is handed straight back rather than left for the reap.
+      await _forgetMedia(mediaId);
+      return;
+    }
+    _grid.assignMissingPositions(tab.tiles.cast<GridItem>());
+    setState(() {});
+    await _save();
+  }
+
+  /// Sets the picture drawn behind [tab].
+  Future<void> _pickBackground(TabPage tab) async {
+    final previous = tab.backgroundMediaId;
+    final mediaId = await _pickMedia();
+    if (mediaId == null || !mounted) return;
+    setState(() => tab.backgroundMediaId = mediaId);
+    await _save();
+    // Only once the board no longer mentions it.
+    if (previous != null) await _forgetMedia(previous);
   }
 
   Future<void> _addTab() async {
@@ -445,7 +651,40 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  /// One tab: its background, and the grid on top of it.
   Widget _page(TabPage tab) {
+    final grid = _tabGrid(tab);
+    final background = tab.backgroundMediaId == null
+        ? null
+        : _media[tab.backgroundMediaId];
+    if (background == null) return grid;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Positioned.fill under the grid rather than a DecorationImage, because
+        // a DecorationImage draws a still: an animated GIF as a background only
+        // moves when it is a real Image widget.
+        Positioned.fill(
+          child: Image.file(
+            File(background),
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+          ),
+        ),
+        // A wash over the picture so the tiles and their labels stay readable
+        // on a bright or busy one. Enough to read against, not so much that the
+        // picture stops being the thing you chose.
+        Positioned.fill(
+          child: ColoredBox(color: Paper.ground.withValues(alpha: 0.45)),
+        ),
+        grid,
+      ],
+    );
+  }
+
+  Widget _tabGrid(TabPage tab) {
     return LayoutBuilder(
       builder: (context, constraints) {
         const columns = Metrics.columns;
@@ -485,7 +724,7 @@ class _HomeScreenState extends State<HomeScreen>
                     ),
                 for (final tile in tab.tiles)
                   AnimatedPositioned(
-                    key: ValueKey(tile.appId),
+                    key: ValueKey(tile.id),
                     duration: const Duration(milliseconds: 220),
                     curve: Curves.easeOut,
                     left: tile.col * step,
@@ -504,11 +743,13 @@ class _HomeScreenState extends State<HomeScreen>
 
   Widget _tile(TabPage tab, Tile tile, double step) {
     final app = _apps[tile.appId];
-    final dragging = _dragging == tile.appId;
+    final dragging = _dragging == tile.id;
 
     final body = _TileBody(
       app: app,
-      appId: tile.appId,
+      tile: tile,
+      imagePath: tile.mediaId == null ? null : _media[tile.mediaId],
+      iconPath: tile.iconMediaId == null ? null : _media[tile.iconMediaId],
       wobbling: _organising && !dragging,
       big: tile.colSpan > 1 || tile.rowSpan > 1,
     );
@@ -525,7 +766,7 @@ class _HomeScreenState extends State<HomeScreen>
     // swipe is switched off above so the two cannot fight over it.
     return GestureDetector(
       onTap: () => _tileMenu(tile),
-      onPanStart: (_) => setState(() => _dragging = tile.appId),
+      onPanStart: (_) => setState(() => _dragging = tile.id),
       onPanUpdate: (details) => _dragTile(tab, tile, details.delta, step),
       onPanEnd: (_) => _endDrag(),
       onPanCancel: _endDrag,
@@ -657,13 +898,21 @@ class _HomeScreenState extends State<HomeScreen>
                     leading: SizedBox(
                       width: 34,
                       height: 34,
-                      child: _apps[tile.appId] == null
-                          ? const Icon(Icons.help_outline_rounded,
-                              color: Paper.dim)
-                          : AppIconImage(app: _apps[tile.appId]!, size: 34),
+                      child: _TileFace(
+                        tile: tile,
+                        app: _apps[tile.appId],
+                        imagePath:
+                            tile.mediaId == null ? null : _media[tile.mediaId],
+                        iconPath: tile.iconMediaId == null
+                            ? null
+                            : _media[tile.iconMediaId],
+                        size: 34,
+                      ),
                     ),
                     title: Text(
-                      _apps[tile.appId]?.label ?? tile.appId,
+                      tile.isImage
+                          ? 'Picture'
+                          : (_apps[tile.appId]?.label ?? tile.id),
                       style: text(size: 14),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -709,16 +958,93 @@ class _HomeScreenState extends State<HomeScreen>
 }
 
 /// One tile: the icon, its name, and a wobble while arranging.
+/// What a tile shows: an app's icon, a picture standing in for one, or a
+/// picture that is the whole tile.
+///
+/// One widget for all three so the fallback order is written once. A custom
+/// icon that cannot be read falls back to the app's own icon rather than to
+/// nothing - the file can go missing while the app is still perfectly
+/// launchable, and a tile that has forgotten what it launches is worse than one
+/// wearing the wrong picture.
+class _TileFace extends StatelessWidget {
+  const _TileFace({
+    required this.tile,
+    required this.app,
+    required this.imagePath,
+    required this.iconPath,
+    required this.size,
+    this.fill = false,
+  });
+
+  final Tile tile;
+  final LaunchableApp? app;
+  final String? imagePath;
+  final String? iconPath;
+  final double size;
+
+  /// Cover the whole tile rather than sit as an icon inside it.
+  final bool fill;
+
+  @override
+  Widget build(BuildContext context) {
+    if (tile.isImage) {
+      final path = imagePath;
+      if (path == null) {
+        return Icon(Icons.broken_image_outlined,
+            size: size * 0.55, color: Paper.dim);
+      }
+      return _picture(context, path, fill ? BoxFit.cover : BoxFit.contain);
+    }
+
+    final icon = iconPath;
+    if (icon != null) return _picture(context, icon, BoxFit.cover);
+
+    final installed = app;
+    if (installed == null) {
+      return Icon(Icons.help_outline_rounded, size: size * 0.55, color: Paper.dim);
+    }
+    return AppIconImage(app: installed, size: size);
+  }
+
+  Widget _picture(BuildContext context, String path, BoxFit fit) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.24),
+      child: Image.file(
+        File(path),
+        fit: fit,
+        width: size,
+        height: size,
+        // Animated GIFs and WebPs play from here with nothing else needed, which
+        // is the whole reason the platform side stores them byte for byte: a
+        // re-encoded one would arrive as a still and never move.
+        gaplessPlayback: true,
+        // Deliberately no cacheWidth: it decodes the first frame only, so an
+        // animation asked to downscale stops being an animation. The store caps
+        // the file instead.
+        errorBuilder: (context, error, stack) => Icon(
+          Icons.broken_image_outlined,
+          size: size * 0.55,
+          color: Paper.dim,
+        ),
+      ),
+    );
+  }
+}
+
 class _TileBody extends StatefulWidget {
   const _TileBody({
     required this.app,
-    required this.appId,
+    required this.tile,
+    required this.imagePath,
+    required this.iconPath,
     required this.wobbling,
     required this.big,
   });
 
   final LaunchableApp? app;
-  final String appId;
+  final Tile tile;
+  final String? imagePath;
+  final String? iconPath;
   final bool wobbling;
   final bool big;
 
@@ -759,37 +1085,61 @@ class _TileBodyState extends State<_TileBody>
   @override
   Widget build(BuildContext context) {
     final app = widget.app;
+    final item = widget.tile;
 
-    final tile = LayoutBuilder(
-      builder: (context, constraints) {
-        final icon = (constraints.biggest.shortestSide * 0.52).clamp(28.0, 72.0);
-        return Container(
-          decoration: BoxDecoration(
-            color: Paper.surface,
+    // A picture tile is the picture: no label, no chrome, no padding. Boxing it
+    // like an app would waste most of the room on a frame around something whose
+    // whole point is to be looked at.
+    final tile = item.isImage
+        ? ClipRRect(
             borderRadius: BorderRadius.circular(Metrics.tileRadius),
-            border: Border.all(color: Paper.edge),
-          ),
-          padding: const EdgeInsets.all(6),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (app == null)
-                Icon(Icons.help_outline_rounded, size: icon, color: Paper.dim)
-              else
-                AppIconImage(app: app, size: icon),
-              const SizedBox(height: 6),
-              Text(
-                app?.label ?? widget.appId.split('/').first,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                textAlign: TextAlign.center,
-                style: text(size: 10, color: Paper.dim),
+            child: SizedBox.expand(
+              child: _TileFace(
+                tile: item,
+                app: null,
+                imagePath: widget.imagePath,
+                iconPath: null,
+                // Sized by the box it is given rather than by a number: fill
+                // mode ignores it, and the fallback glyph scales off the tile.
+                size: 96,
+                fill: true,
               ),
-            ],
-          ),
-        );
-      },
-    );
+            ),
+          )
+        : LayoutBuilder(
+            builder: (context, constraints) {
+              final icon =
+                  (constraints.biggest.shortestSide * 0.52).clamp(28.0, 72.0);
+              return Container(
+                decoration: BoxDecoration(
+                  color: Paper.surface,
+                  borderRadius: BorderRadius.circular(Metrics.tileRadius),
+                  border: Border.all(color: Paper.edge),
+                ),
+                padding: const EdgeInsets.all(6),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _TileFace(
+                      tile: item,
+                      app: app,
+                      imagePath: null,
+                      iconPath: widget.iconPath,
+                      size: icon,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      app?.label ?? item.id.split('/').first,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: text(size: 10, color: Paper.dim),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
 
     if (!widget.wobbling) return tile;
 

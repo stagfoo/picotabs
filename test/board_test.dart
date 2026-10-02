@@ -233,4 +233,199 @@ void main() {
       expect(restored['tab-home']!.name, 'First');
     });
   });
+
+  group('pictures on the grid', () {
+    test('a picture goes on as a tile of its own', () {
+      final b = board();
+      final tile = b.addImage('tab-home', 'm-1')!;
+      expect(tile.isImage, isTrue);
+      expect(tile.mediaId, 'm-1');
+      // No app, so nothing to launch and nothing to look up in the app list.
+      expect(tile.appId, isNull);
+      expect(tile.placed, isFalse);
+    });
+
+    test('the same picture can be placed more than once', () {
+      // Unlike an app: two tiles for one app would both launch the same thing,
+      // where two of a picture are two pictures.
+      final b = board();
+      final first = b.addImage('tab-home', 'm-1')!;
+      final second = b.addImage('tab-home', 'm-1')!;
+      expect(first.id, isNot(second.id));
+      expect(b['tab-home']!.tiles, hasLength(2));
+    });
+
+    test('a picture needs a picture', () {
+      final b = board();
+      expect(b.addImage('tab-home', ''), isNull);
+      expect(b.addImage('nope', 'm-1'), isNull);
+    });
+
+    test('round-trips through storage', () {
+      final b = board();
+      final tile = b.addImage('tab-home', 'm-1')!;
+      tile.row = 2;
+      tile.col = 1;
+      tile.colSpan = 2;
+      tile.rowSpan = 2;
+
+      final back = Board.fromJson(b.toJson())['tab-home']!.tiles.single;
+      expect(back.isImage, isTrue);
+      expect(back.mediaId, 'm-1');
+      expect(back.id, tile.id);
+      expect((back.row, back.col, back.colSpan, back.rowSpan), (2, 1, 2, 2));
+    });
+
+    test('a stored picture with no picture left is dropped', () {
+      // It would draw as a blank square with nothing to tap and no way to say
+      // what it was meant to be.
+      final tab = TabPage.fromJson({
+        'id': 'tab-home',
+        'name': 'Home',
+        'tiles': [
+          {'appId': 'img-1', 'kind': 'image', 'row': 0, 'col': 0},
+        ],
+      });
+      expect(tab!.tiles, isEmpty);
+    });
+
+    test('is not swept away with uninstalled apps', () {
+      // The sweep asks the app list about every tile. A picture is never in it,
+      // so keying that check on the id alone would clear every picture the first
+      // time the launcher looked.
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      final picture = b.addImage('tab-home', 'm-1')!;
+      final appTiles = [
+        for (final tile in b['tab-home']!.tiles)
+          if (tile.appId != null) tile,
+      ];
+      expect(appTiles, hasLength(1));
+      expect(appTiles.single.id, 'com.a/M');
+      expect(b['tab-home']!.tiles, contains(picture));
+    });
+  });
+
+  group('a custom icon', () {
+    test('is remembered per tile and round-trips', () {
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon('m-icon'));
+
+      final back = Board.fromJson(b.toJson())['tab-home']!.tileFor('com.a/M')!;
+      expect(back.iconMediaId, 'm-icon');
+      expect(back.isImage, isFalse);
+      expect(back.appId, 'com.a/M');
+    });
+
+    test('is cleared by setting it to nothing', () {
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon('m-icon'));
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon(null));
+      expect(b['tab-home']!.tileFor('com.a/M')!.iconMediaId, isNull);
+    });
+
+    test('keeps the tile where it was', () {
+      // Changing a picture must not move the tile: the grid holds real
+      // coordinates, and a replaced tile arriving unplaced would jump.
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      final tile = b['tab-home']!.tileFor('com.a/M')!;
+      tile.row = 3;
+      tile.col = 2;
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon('m-icon'));
+
+      final after = b['tab-home']!.tileFor('com.a/M')!;
+      expect((after.row, after.col), (3, 2));
+    });
+
+    test('travels with the app when it moves tab', () {
+      // The icon is a choice about the app, not about where it was sitting.
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon('m-icon'));
+      expect(b.moveApp('tab-home', 'tab-all', 'com.a/M'), isTrue);
+      expect(b['tab-all']!.tileFor('com.a/M')!.iconMediaId, 'm-icon');
+    });
+
+    test('replace reports whether it found anything', () {
+      final b = board();
+      expect(b.replace('tab-home', 'nothing', (t) => t), isFalse);
+      expect(b.replace('nope', 'nothing', (t) => t), isFalse);
+    });
+  });
+
+  group('a tab background', () {
+    test('defaults to none and round-trips when set', () {
+      final b = board();
+      expect(b['tab-home']!.backgroundMediaId, isNull);
+      expect(b.toJson().first.containsKey('background'), isFalse);
+
+      b['tab-home']!.backgroundMediaId = 'm-bg';
+      final back = Board.fromJson(b.toJson());
+      expect(back['tab-home']!.backgroundMediaId, 'm-bg');
+    });
+
+    test('is per tab, so one tab does not change another', () {
+      final b = board();
+      b['tab-home']!.backgroundMediaId = 'm-bg';
+      expect(b['tab-all']!.backgroundMediaId, isNull);
+    });
+  });
+
+  group('pictures nothing points at', () {
+    test('the board lists every picture it still needs', () {
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      b.replace('tab-home', 'com.a/M', (t) => t.withIcon('m-icon'));
+      b.addImage('tab-home', 'm-tile');
+      b['tab-all']!.backgroundMediaId = 'm-bg';
+
+      expect(b.mediaIds, {'m-icon', 'm-tile', 'm-bg'});
+    });
+
+    test('a removed tile stops the board needing its picture', () {
+      // This is what the reap reads, so a picture dropping out of it is what
+      // actually deletes the file.
+      final b = board();
+      final tile = b.addImage('tab-home', 'm-tile')!;
+      expect(b.mediaIds, contains('m-tile'));
+      b.remove('tab-home', tile.id);
+      expect(b.mediaIds, isEmpty);
+    });
+
+    test('a deleted tab takes its pictures out of the list too', () {
+      final b = board();
+      b.addImage('tab-home', 'm-tile');
+      b['tab-home']!.backgroundMediaId = 'm-bg';
+      b.removeTab('tab-home');
+      expect(b.mediaIds, isEmpty);
+    });
+  });
+
+  group('boards saved before pictures existed', () {
+    test('load unchanged', () {
+      // Every tile in an existing install looks like this. The stored key is
+      // still appId for exactly this reason - renaming it would have emptied
+      // every tab on the first launch after the update.
+      final back = Board.fromJson([
+        {
+          'id': 'tab-home',
+          'name': 'Home',
+          'tiles': [
+            {'appId': 'com.a/M', 'row': 0, 'col': 0},
+            {'appId': 'com.b/M', 'row': 0, 'col': 1, 'colSpan': 2},
+          ],
+        },
+      ]);
+      final tiles = back['tab-home']!.tiles;
+      expect(tiles, hasLength(2));
+      expect(tiles.first.appId, 'com.a/M');
+      expect(tiles.first.isImage, isFalse);
+      expect(tiles.first.iconMediaId, isNull);
+      expect(tiles[1].colSpan, 2);
+      expect(back['tab-home']!.backgroundMediaId, isNull);
+    });
+  });
 }
