@@ -335,12 +335,7 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
     if (choice == 'remove') {
-      _board.remove(_here.id, tile.id);
-      setState(() {});
-      // After the board is saved without it, so a picture is only deleted once
-      // nothing can still be pointing at it.
-      await _save();
-      await _reapMedia();
+      await _removeTile(tile);
       return;
     }
     if (choice.startsWith('move:') && appId != null) {
@@ -558,12 +553,34 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   void _launch(Tile tile) {
+    // A picture tile launches nothing. It used to fall through to the app
+    // lookup, find no app, and announce "Not installed any more" - which is
+    // both untrue and the opposite of reassuring about a picture you just
+    // added. Its menu is on the long press, like every other tile's.
+    if (tile.isImage) return;
+
     final app = _apps[tile.appId];
     if (app == null) {
       _toast('Not installed any more');
       return;
     }
     LauncherBridge.instance.open(app);
+  }
+
+  /// Takes [tile] off the tab it is on.
+  ///
+  /// Shared by the tile menu and the arrange-mode badge, so the two cannot
+  /// disagree about what removing means - particularly for a picture, where it
+  /// also decides whether the file goes.
+  Future<void> _removeTile(Tile tile) async {
+    final wasImage = tile.isImage;
+    _board.remove(_here.id, tile.id);
+    setState(() {});
+    // Saved without it before anything is deleted, so a picture is only ever
+    // removed once nothing can still be pointing at it.
+    await _save();
+    await _reapMedia();
+    if (wasImage) _toast('Picture removed');
   }
 
   // ------------------------------------------------------------------- view
@@ -764,13 +781,49 @@ class _HomeScreenState extends State<HomeScreen>
 
     // While arranging, a plain drag moves the tile. The page's own horizontal
     // swipe is switched off above so the two cannot fight over it.
-    return GestureDetector(
-      onTap: () => _tileMenu(tile),
-      onPanStart: (_) => setState(() => _dragging = tile.id),
-      onPanUpdate: (details) => _dragTile(tab, tile, details.delta, step),
-      onPanEnd: (_) => _endDrag(),
-      onPanCancel: _endDrag,
-      child: body,
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        GestureDetector(
+          onTap: () => _tileMenu(tile),
+          onPanStart: (_) => setState(() => _dragging = tile.id),
+          onPanUpdate: (details) => _dragTile(tab, tile, details.delta, step),
+          onPanEnd: (_) => _endDrag(),
+          onPanCancel: _endDrag,
+          child: body,
+        ),
+        // The way out. Removing used to live only behind a long press on the
+        // tile, which is a thing you have to already know is there - so the
+        // honest answer to "how do I take this off" was that there was no way
+        // to find out. Arrange mode is where every launcher puts this, and a
+        // badge says it is possible without anyone being told.
+        //
+        // Hidden on the tile being dragged: it follows the finger, and a
+        // delete control under a moving thumb is one mis-release from taking
+        // the tile away instead of putting it down.
+        if (!dragging)
+          Positioned(
+            top: -4,
+            left: -4,
+            child: GestureDetector(
+              // Painted after the body, so it is hit first and a clean tap on
+              // it never reaches the pan that moves the tile.
+              onTap: () => _removeTile(tile),
+              child: Container(
+                width: 26,
+                height: 26,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFC0503A),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Paper.ground, width: 2),
+                ),
+                child: const Icon(Icons.close_rounded,
+                    size: 15, color: Colors.white),
+              ),
+            ),
+          ),
+      ],
     );
   }
 

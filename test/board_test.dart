@@ -428,4 +428,47 @@ void main() {
       expect(back['tab-home']!.backgroundMediaId, isNull);
     });
   });
+
+  group('taking a tile off', () {
+    test('removes an app tile by its app id', () {
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      expect(b.remove('tab-home', 'com.a/M'), isTrue);
+      expect(b['tab-home']!.tiles, isEmpty);
+    });
+
+    test('removes a picture tile by its own id', () {
+      // A picture's id is not an app id, so removal has to key on the tile
+      // rather than on the app - which is the whole reason remove() takes an id
+      // and not an appId.
+      final b = board();
+      final tile = b.addImage('tab-home', 'm-1')!;
+      expect(b.remove('tab-home', tile.id), isTrue);
+      expect(b['tab-home']!.tiles, isEmpty);
+    });
+
+    test('removing one of two identical pictures leaves the other', () {
+      final b = board();
+      final first = b.addImage('tab-home', 'm-1')!;
+      final second = b.addImage('tab-home', 'm-1')!;
+      b.remove('tab-home', first.id);
+      expect(b['tab-home']!.tiles.single.id, second.id);
+      // The picture is still needed, so it must not be reaped.
+      expect(b.mediaIds, contains('m-1'));
+    });
+
+    test('says so when there was nothing to remove', () {
+      final b = board();
+      expect(b.remove('tab-home', 'nothing'), isFalse);
+      expect(b.remove('no-such-tab', 'com.a/M'), isFalse);
+    });
+
+    test('taking an app off one tab leaves it on the others', () {
+      final b = board();
+      b.add('tab-home', 'com.a/M');
+      b.add('tab-all', 'com.a/M');
+      b.remove('tab-home', 'com.a/M');
+      expect(b['tab-all']!.holds('com.a/M'), isTrue);
+    });
+  });
 }
